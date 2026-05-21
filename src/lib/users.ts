@@ -4,6 +4,8 @@ import type { Database } from '../db/index.js';
 import { userStats, users } from '../db/schema.js';
 import { cacheDelete, cacheGet, cacheSet } from './cache.js';
 import { creditPoints } from './points.js';
+import { normalizeSuiAddress } from './sui-address.js';
+import { reconcileUnlinkedTrades } from './trade-reconcile.js';
 import {
   normalizeReferralCodeInput,
   referralCodeFromHandle,
@@ -66,10 +68,13 @@ export async function registerUser(
     referralCode?: string | null;
   }
 ): Promise<UserRow> {
-  const normalizedAddress = params.suiAddress.trim().toLowerCase();
+  const normalizedAddress = normalizeSuiAddress(params.suiAddress);
   const existing = await findUserByPrivyId(db, params.privyUserId);
   if (existing) {
-    return syncUserReferralIdentity(db, existing, params.handle);
+    const withWallet = await syncUserSuiAddress(db, existing, normalizedAddress);
+    const user = await syncUserReferralIdentity(db, withWallet, params.handle);
+    await reconcileUnlinkedTrades(db);
+    return user;
   }
 
   const handleError = validateHandleInput(params.handle);
@@ -124,7 +129,38 @@ export async function registerUser(
   }
 
   cacheDelete(VALIDATE_CACHE_NS, handle);
+  await reconcileUnlinkedTrades(db);
   return created;
+}
+
+/** Update wallet when Privy sends a new Sui address (re-register / app open sync). */
+export async function syncUserSuiAddress(
+  db: Database,
+  user: UserRow,
+  suiAddress: string
+): Promise<UserRow> {
+  const normalized = normalizeSuiAddress(suiAddress);
+  if (user.suiAddress === normalized) {
+    return user;
+  }
+
+  const [taken] = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(eq(users.suiAddress, normalized))
+    .limit(1);
+
+  if (taken && taken.id !== user.id) {
+    throw new Error('This wallet is already linked to another Hedge account');
+  }
+
+  const [updated] = await db
+    .update(users)
+    .set({ suiAddress: normalized, updatedAt: new Date() })
+    .where(eq(users.id, user.id))
+    .returning();
+
+  return updated;
 }
 
 /** Keep `handle` and `referral_code` in sync (username = referral link). */

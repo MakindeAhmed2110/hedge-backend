@@ -17,7 +17,7 @@ DATABASE_URL=postgresql://postgres.[ref]:[password]@....pooler.supabase.com:5432
 |-------|---------|
 | `users` | Logged-in app users (Privy id + Sui address + referral code) |
 | `user_stats` | Volume, points, streaks per app user |
-| `trades` | Indexed Predict mints/redeems |
+| `trades` | Predict mints/redeems **for registered Hedge users only** (not the whole chain) |
 | `points_ledger` | Append-only point credits |
 | `waitlist_users` | Pre-launch email/handle signups (separate funnel) |
 | `indexer_state` | Cursor for predict-server indexer |

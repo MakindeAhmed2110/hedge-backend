@@ -1,14 +1,20 @@
 import { eq, sql } from 'drizzle-orm';
 
 import type { Database } from '../db/index.js';
-import { indexerState, trades, userStats, users } from '../db/schema.js';
+import { indexerState, trades, userStats } from '../db/schema.js';
 import { rawQuoteToUsd } from '../lib/quote.js';
 import {
   creditPoints,
   rewardReferrerForVolume,
   volumePointsForUsd,
 } from '../lib/points.js';
-import { utcDayKey, weekStartUtc } from '../lib/week.js';
+import { normalizeSuiAddress } from '../lib/sui-address.js';
+import {
+  loadRegisteredWalletMap,
+  pruneUnregisteredTrades,
+  reconcileUnlinkedTrades,
+} from '../lib/trade-reconcile.js';
+import { updateStatsForMint } from '../lib/user-stats.js';
 import { fetchPositionsMinted, fetchPositionsRedeemed } from './client.js';
 import type {
   PredictPositionMintedEvent,
@@ -37,84 +43,17 @@ async function setCursor(db: Database, key: string, checkpointMs: number): Promi
     });
 }
 
-async function findUserIdBySuiAddress(
+async function ingestMint(
   db: Database,
-  address: string
-): Promise<string | null> {
-  const normalized = address.trim().toLowerCase();
-  const [row] = await db
-    .select({ id: users.id })
-    .from(users)
-    .where(eq(users.suiAddress, normalized))
-    .limit(1);
-  return row?.id ?? null;
-}
+  event: PredictPositionMintedEvent,
+  registered: Map<string, string>
+): Promise<boolean> {
+  const suiAddress = normalizeSuiAddress(event.trader);
+  const userId = registered.get(suiAddress);
+  if (!userId) return false;
 
-async function updateStatsForMint(
-  db: Database,
-  userId: string | null,
-  stakeUsd: number,
-  occurredAt: Date
-): Promise<void> {
-  if (!userId || stakeUsd <= 0) return;
-
-  const weekStart = weekStartUtc(new Date());
-  const tradeWeekStart = weekStartUtc(occurredAt);
-  const isCurrentWeek = weekStart.getTime() === tradeWeekStart.getTime();
-
-  const dayKey = utcDayKey(occurredAt);
-  const [stats] = await db
-    .select({
-      lastActiveDate: userStats.lastActiveDate,
-      currentStreakDays: userStats.currentStreakDays,
-    })
-    .from(userStats)
-    .where(eq(userStats.userId, userId))
-    .limit(1);
-
-  let streak = stats?.currentStreakDays ?? 0;
-  const last = stats?.lastActiveDate;
-  if (!last) {
-    streak = 1;
-  } else {
-    const lastKey = utcDayKey(last);
-    if (lastKey === dayKey) {
-      streak = stats?.currentStreakDays ?? 1;
-    } else {
-      const yesterday = new Date(occurredAt);
-      yesterday.setUTCDate(yesterday.getUTCDate() - 1);
-      streak = utcDayKey(yesterday) === lastKey ? (stats?.currentStreakDays ?? 0) + 1 : 1;
-    }
-  }
-
-  await db
-    .insert(userStats)
-    .values({
-      userId,
-      lifetimeVolumeUsd: String(stakeUsd),
-      weekVolumeUsd: isCurrentWeek ? String(stakeUsd) : '0',
-      lastActiveDate: occurredAt,
-      currentStreakDays: streak,
-    })
-    .onConflictDoUpdate({
-      target: userStats.userId,
-      set: {
-        lifetimeVolumeUsd: sql`${userStats.lifetimeVolumeUsd} + ${stakeUsd}`,
-        weekVolumeUsd: isCurrentWeek
-          ? sql`${userStats.weekVolumeUsd} + ${stakeUsd}`
-          : userStats.weekVolumeUsd,
-        lastActiveDate: occurredAt,
-        currentStreakDays: streak,
-        updatedAt: new Date(),
-      },
-    });
-}
-
-async function ingestMint(db: Database, event: PredictPositionMintedEvent): Promise<boolean> {
   const stakeUsd = rawQuoteToUsd(event.cost);
   const occurredAt = new Date(event.checkpoint_timestamp_ms);
-  const suiAddress = event.trader.trim().toLowerCase();
-  const userId = await findUserIdBySuiAddress(db, suiAddress);
 
   const inserted = await db
     .insert(trades)
@@ -140,27 +79,31 @@ async function ingestMint(db: Database, event: PredictPositionMintedEvent): Prom
 
   if (inserted.length === 0) return false;
 
-  if (userId) {
-    const points = volumePointsForUsd(stakeUsd);
-    await creditPoints(db, {
-      userId,
-      source: 'volume',
-      amount: points,
-      referenceId: event.event_digest,
-      occurredAt,
-    });
-    await rewardReferrerForVolume(db, userId, event.event_digest, stakeUsd, occurredAt);
-    await updateStatsForMint(db, userId, stakeUsd, occurredAt);
-  }
+  const points = volumePointsForUsd(stakeUsd);
+  await creditPoints(db, {
+    userId,
+    source: 'volume',
+    amount: points,
+    referenceId: event.event_digest,
+    occurredAt,
+  });
+  await rewardReferrerForVolume(db, userId, event.event_digest, stakeUsd, occurredAt);
+  await updateStatsForMint(db, userId, stakeUsd, occurredAt);
 
   return true;
 }
 
-async function ingestRedeem(db: Database, event: PredictPositionRedeemedEvent): Promise<boolean> {
+async function ingestRedeem(
+  db: Database,
+  event: PredictPositionRedeemedEvent,
+  registered: Map<string, string>
+): Promise<boolean> {
+  const suiAddress = normalizeSuiAddress(event.owner);
+  const userId = registered.get(suiAddress);
+  if (!userId) return false;
+
   const payoutUsd = rawQuoteToUsd(event.payout);
   const occurredAt = new Date(event.checkpoint_timestamp_ms);
-  const suiAddress = event.owner.trim().toLowerCase();
-  const userId = await findUserIdBySuiAddress(db, suiAddress);
 
   const inserted = await db
     .insert(trades)
@@ -186,7 +129,7 @@ async function ingestRedeem(db: Database, event: PredictPositionRedeemedEvent): 
 
   if (inserted.length === 0) return false;
 
-  if (userId && event.is_settled) {
+  if (event.is_settled) {
     const mintStake = await db
       .select({ stakeUsd: trades.stakeUsd })
       .from(trades)
@@ -213,15 +156,39 @@ async function ingestRedeem(db: Database, event: PredictPositionRedeemedEvent): 
 }
 
 export type IndexerRunResult = {
+  registeredWallets: number;
+  prunedUnregisteredTrades: number;
   mintedIngested: number;
   redeemedIngested: number;
   mintedCursor: number;
   redeemedCursor: number;
+  linkedTrades: number;
+  volumePointsCredited: number;
 };
 
+/**
+ * Polls Predict for new mints/redeems but only persists rows for registered Hedge users.
+ * Cursor still advances over the global feed so we do not re-scan old chain events.
+ */
 export async function runPredictIndexer(db: Database): Promise<IndexerRunResult> {
+  const prunedUnregisteredTrades = await pruneUnregisteredTrades(db);
+  const registered = await loadRegisteredWalletMap(db);
+
   const mintedCursor = await getCursor(db, MINTED_CURSOR);
   const redeemedCursor = await getCursor(db, REDEEMED_CURSOR);
+
+  if (registered.size === 0) {
+    return {
+      registeredWallets: 0,
+      prunedUnregisteredTrades,
+      mintedIngested: 0,
+      redeemedIngested: 0,
+      mintedCursor,
+      redeemedCursor,
+      linkedTrades: 0,
+      volumePointsCredited: 0,
+    };
+  }
 
   const [mintedEvents, redeemedEvents] = await Promise.all([
     fetchPositionsMinted(),
@@ -239,7 +206,7 @@ export async function runPredictIndexer(db: Database): Promise<IndexerRunResult>
   let mintedIngested = 0;
   let maxMintMs = mintedCursor;
   for (const event of newMints) {
-    const ingested = await ingestMint(db, event);
+    const ingested = await ingestMint(db, event, registered);
     if (ingested) mintedIngested += 1;
     maxMintMs = Math.max(maxMintMs, event.checkpoint_timestamp_ms);
   }
@@ -247,7 +214,7 @@ export async function runPredictIndexer(db: Database): Promise<IndexerRunResult>
   let redeemedIngested = 0;
   let maxRedeemMs = redeemedCursor;
   for (const event of newRedeems) {
-    const ingested = await ingestRedeem(db, event);
+    const ingested = await ingestRedeem(db, event, registered);
     if (ingested) redeemedIngested += 1;
     maxRedeemMs = Math.max(maxRedeemMs, event.checkpoint_timestamp_ms);
   }
@@ -255,10 +222,16 @@ export async function runPredictIndexer(db: Database): Promise<IndexerRunResult>
   if (maxMintMs > mintedCursor) await setCursor(db, MINTED_CURSOR, maxMintMs);
   if (maxRedeemMs > redeemedCursor) await setCursor(db, REDEEMED_CURSOR, maxRedeemMs);
 
+  const reconcile = await reconcileUnlinkedTrades(db);
+
   return {
+    registeredWallets: registered.size,
+    prunedUnregisteredTrades,
     mintedIngested,
     redeemedIngested,
     mintedCursor: maxMintMs,
     redeemedCursor: maxRedeemMs,
+    linkedTrades: reconcile.linkedTrades,
+    volumePointsCredited: reconcile.volumePointsCredited,
   };
 }
