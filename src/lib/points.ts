@@ -109,9 +109,7 @@ export async function getPointsSummary(db: Database, userId: string) {
       points: sql<number>`sum(${pointsLedger.amount})::int`.as('points'),
     })
     .from(pointsLedger)
-    .where(
-      and(eq(pointsLedger.userId, userId), sql`${pointsLedger.weekStart} = ${weekStart}`)
-    )
+    .where(and(eq(pointsLedger.userId, userId), eq(pointsLedger.weekStart, weekStart)))
     .groupBy(sql`to_char(${pointsLedger.createdAt}, 'YYYY-MM-DD')`)
     .orderBy(sql`date`);
 

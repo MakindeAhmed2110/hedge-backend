@@ -170,7 +170,12 @@ userRoutes.get('/users/me/referrals', requireAuth, async (c) => {
     id: `${row.userAddress}-${index}`,
     userAddress: row.userAddress,
     handle: row.handle,
-    joinedAt: row.joinedAt,
+    joinedAt:
+      row.joinedAt instanceof Date
+        ? row.joinedAt.toISOString()
+        : row.joinedAt
+          ? String(row.joinedAt)
+          : null,
     lifetimeVolumeUsd: Number(row.lifetimeVolumeUsd ?? 0),
   }));
 
