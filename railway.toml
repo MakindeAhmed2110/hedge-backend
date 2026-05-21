@@ -1,0 +1,14 @@
+# https://docs.railway.com/guides/config-as-code
+# In Railway dashboard: Service → Settings → Root Directory = backend
+
+[build]
+builder = "NIXPACKS"
+buildCommand = "pnpm install --frozen-lockfile && pnpm build"
+
+[deploy]
+preDeployCommand = "node dist/db/migrate.js"
+startCommand = "node dist/index.js"
+healthcheckPath = "/health"
+healthcheckTimeout = 120
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3

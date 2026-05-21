@@ -1,0 +1,34 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1779314763848,
+      "tag": "0000_deep_yellow_claw",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1779400000000,
+      "tag": "0001_referral_perf_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1779500000000,
+      "tag": "0002_waitlist_users",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1779500000001,
+      "tag": "0003_waitlist_handle_lowercase",
+      "breakpoints": true
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: hedge
+      POSTGRES_PASSWORD: hedge
+      POSTGRES_DB: hedge
+    ports:
+      - '5432:5432'
+    volumes:
+      - hedge_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U hedge -d hedge']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  hedge_pg_data:
