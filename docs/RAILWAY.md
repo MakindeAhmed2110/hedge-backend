@@ -90,8 +90,9 @@ HEDGE_SERVICE_KEY=<same as Railway>
 | Issue | Fix |
 |-------|-----|
 | Build can’t find pnpm | Root Directory must be `backend`; `packageManager` is in `package.json` |
+| Pre-deploy `ECONNREFUSED` on migrate | **`DATABASE_URL` missing or wrong on Railway** — without it, the app defaults to `localhost:5432` inside the container. Paste the same Supabase **Session pooler** URI as local `.env`. Set `DATABASE_SSL=require` if needed. |
 | DB connection timeout | Use Supabase **Session pooler** URI; lower `DATABASE_POOL_MAX` |
-| Migrate fails | Check `DATABASE_URL`; run SQL from `drizzle/` in Supabase SQL editor if needed |
+| Migrate fails (other) | Check password URL-encoding in `DATABASE_URL`; run SQL from `drizzle/` in Supabase SQL editor if needed |
 | 502 on health | Logs tab; confirm `PORT` is not overridden |
 
 ## 8. Logs & redeploy

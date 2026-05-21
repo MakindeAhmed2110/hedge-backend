@@ -62,8 +62,19 @@ export function databaseSslMode(): 'require' | false {
 }
 
 export function assertRuntimeConfig(): void {
-  if (!env.databaseUrl) {
-    throw new Error('DATABASE_URL is required');
+  const databaseUrl = process.env.DATABASE_URL?.trim();
+  if (!databaseUrl) {
+    throw new Error(
+      'DATABASE_URL is required. On Railway, set your Supabase Session pooler URI in Variables.'
+    );
+  }
+  if (
+    env.nodeEnv === 'production' &&
+    /localhost|127\.0\.0\.1/.test(databaseUrl)
+  ) {
+    throw new Error(
+      'DATABASE_URL points to localhost in production. Set the Supabase pooler URL in Railway Variables.'
+    );
   }
 }
 
