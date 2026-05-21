@@ -2,19 +2,14 @@ import { eq, sql } from 'drizzle-orm';
 
 import type { Database } from '../db/index.js';
 import { indexerState, trades, userStats } from '../db/schema.js';
-import { rawQuoteToUsd } from '../lib/quote.js';
-import {
-  creditPoints,
-  rewardReferrerForVolume,
-  volumePointsForUsd,
-} from '../lib/points.js';
+import { recordMintForUser } from '../lib/record-mint.js';
 import { normalizeSuiAddress } from '../lib/sui-address.js';
+import { rawQuoteToUsd } from '../lib/quote.js';
 import {
   loadRegisteredWalletMap,
   pruneUnregisteredTrades,
   reconcileUnlinkedTrades,
 } from '../lib/trade-reconcile.js';
-import { updateStatsForMint } from '../lib/user-stats.js';
 import { fetchPositionsMinted, fetchPositionsRedeemed } from './client.js';
 import type {
   PredictPositionMintedEvent,
@@ -52,45 +47,8 @@ async function ingestMint(
   const userId = registered.get(suiAddress);
   if (!userId) return false;
 
-  const stakeUsd = rawQuoteToUsd(event.cost);
-  const occurredAt = new Date(event.checkpoint_timestamp_ms);
-
-  const inserted = await db
-    .insert(trades)
-    .values({
-      eventDigest: event.event_digest,
-      txDigest: event.digest,
-      userId,
-      suiAddress,
-      tradeType: 'mint',
-      oracleId: event.oracle_id,
-      predictId: event.predict_id,
-      managerId: event.manager_id,
-      stakeUsd: String(stakeUsd),
-      quantity: event.quantity,
-      isUp: event.is_up,
-      strike: event.strike,
-      payoutUsd: null,
-      checkpoint: event.checkpoint,
-      occurredAt,
-    })
-    .onConflictDoNothing()
-    .returning({ id: trades.id });
-
-  if (inserted.length === 0) return false;
-
-  const points = volumePointsForUsd(stakeUsd);
-  await creditPoints(db, {
-    userId,
-    source: 'volume',
-    amount: points,
-    referenceId: event.event_digest,
-    occurredAt,
-  });
-  await rewardReferrerForVolume(db, userId, event.event_digest, stakeUsd, occurredAt);
-  await updateStatsForMint(db, userId, stakeUsd, occurredAt);
-
-  return true;
+  const result = await recordMintForUser(db, userId, suiAddress, event);
+  return result.recorded;
 }
 
 async function ingestRedeem(
@@ -158,6 +116,8 @@ async function ingestRedeem(
 export type IndexerRunResult = {
   registeredWallets: number;
   prunedUnregisteredTrades: number;
+  /** Mints for Hedge users found in latest feed (ignores global cursor). */
+  mintsScannedFromFeed: number;
   mintedIngested: number;
   redeemedIngested: number;
   mintedCursor: number;
@@ -181,6 +141,7 @@ export async function runPredictIndexer(db: Database): Promise<IndexerRunResult>
     return {
       registeredWallets: 0,
       prunedUnregisteredTrades,
+      mintsScannedFromFeed: 0,
       mintedIngested: 0,
       redeemedIngested: 0,
       mintedCursor,
@@ -194,6 +155,14 @@ export async function runPredictIndexer(db: Database): Promise<IndexerRunResult>
     fetchPositionsMinted(),
     fetchPositionsRedeemed(),
   ]);
+
+  let mintsScannedFromFeed = 0;
+  for (const event of mintedEvents) {
+    const suiAddress = normalizeSuiAddress(event.trader);
+    if (!registered.has(suiAddress)) continue;
+    const ingested = await ingestMint(db, event, registered);
+    if (ingested) mintsScannedFromFeed += 1;
+  }
 
   const newMints = mintedEvents
     .filter((e) => e.checkpoint_timestamp_ms > mintedCursor)
@@ -227,6 +196,7 @@ export async function runPredictIndexer(db: Database): Promise<IndexerRunResult>
   return {
     registeredWallets: registered.size,
     prunedUnregisteredTrades,
+    mintsScannedFromFeed,
     mintedIngested,
     redeemedIngested,
     mintedCursor: maxMintMs,

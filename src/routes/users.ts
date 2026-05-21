@@ -6,6 +6,7 @@ import { db } from '../db/index.js';
 import { env } from '../env.js';
 import { userStats, users } from '../db/schema.js';
 import { getPointsSummary } from '../lib/points.js';
+import { recordMintFromClientReport } from '../lib/record-mint.js';
 import { buildReferralUrl, normalizeReferralCodeInput } from '../lib/referral-code.js';
 import { validateReferralTarget } from '../lib/waitlist.js';
 import {
@@ -30,6 +31,14 @@ const referralSchema = z.object({
 
 const handleSchema = z.object({
   handle: z.string().min(3).max(20),
+});
+
+const recordMintSchema = z.object({
+  txDigest: z.string().min(10),
+  stakeUsd: z.number().positive(),
+  oracleId: z.string().min(10).optional(),
+  predictId: z.string().min(10).optional(),
+  managerId: z.string().min(10).optional(),
 });
 
 export const userRoutes = new Hono<{ Variables: AuthVariables }>();
@@ -147,6 +156,39 @@ userRoutes.get('/users/me/points', requireAuth, async (c) => {
   if (!userId) return c.json({ error: 'User not registered' }, 404);
   const points = await getPointsSummary(db, userId);
   return c.json({ data: points });
+});
+
+/** Credit volume points right after a predict mint (does not rely on global indexer cursor). */
+userRoutes.post('/users/me/mints', requireAuth, async (c) => {
+  const parsed = recordMintSchema.safeParse(await c.req.json());
+  if (!parsed.success) {
+    return c.json({ error: parsed.error.flatten() }, 400);
+  }
+
+  const userId = c.get('userId');
+  if (!userId) {
+    return c.json({ error: 'User not registered. POST /users/register first.' }, 404);
+  }
+
+  const profile = await getUserProfile(db, userId);
+  if (!profile?.user.suiAddress) {
+    return c.json({ error: 'User wallet not found' }, 404);
+  }
+
+  try {
+    const result = await recordMintFromClientReport(db, userId, profile.user.suiAddress, {
+      txDigest: parsed.data.txDigest,
+      stakeUsd: parsed.data.stakeUsd,
+      oracleId: parsed.data.oracleId,
+      predictId: parsed.data.predictId,
+      managerId: parsed.data.managerId,
+    });
+    const points = await getPointsSummary(db, userId);
+    return c.json({ data: { ...result, points } });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to record mint';
+    return c.json({ error: message }, 400);
+  }
 });
 
 userRoutes.get('/users/me/referrals', requireAuth, async (c) => {
