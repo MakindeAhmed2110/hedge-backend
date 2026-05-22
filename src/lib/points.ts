@@ -62,7 +62,9 @@ export async function creditPoints(
 }
 
 export function volumePointsForUsd(stakeUsd: number): number {
-  return Math.floor(stakeUsd * env.pointsPerUsd);
+  if (stakeUsd <= 0) return 0;
+  // Ceil so e.g. $1.11 @ 0.1 pts/USD → 1 point (floor would be 0).
+  return Math.ceil(stakeUsd * env.pointsPerUsd);
 }
 
 export async function rewardReferrerForVolume(

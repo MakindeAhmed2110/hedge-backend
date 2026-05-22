@@ -36,7 +36,8 @@ export async function recordMintForUser(
 ): Promise<RecordMintResult> {
   const wallet = normalizeSuiAddress(suiAddress);
   const trader = normalizeSuiAddress(event.trader);
-  if (trader !== wallet) {
+  const isClientReport = event.event_digest.startsWith('client:');
+  if (!isClientReport && trader !== wallet) {
     throw new Error('Mint trader does not match your registered wallet');
   }
 
@@ -98,7 +99,14 @@ export async function recordMintFromClientReport(
 ): Promise<RecordMintResult> {
   const onChain = await findMintEventByTxDigest(params.txDigest);
   if (onChain) {
-    return recordMintForUser(db, userId, suiAddress, onChain);
+    try {
+      return await recordMintForUser(db, userId, suiAddress, onChain);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '';
+      if (!message.includes('does not match your registered wallet')) {
+        throw error;
+      }
+    }
   }
 
   const wallet = normalizeSuiAddress(suiAddress);
