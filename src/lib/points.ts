@@ -115,12 +115,16 @@ export async function getPointsSummary(db: Database, userId: string) {
     .groupBy(sql`to_char(${pointsLedger.createdAt}, 'YYYY-MM-DD')`)
     .orderBy(sql`date`);
 
+  const weeklySummary = weeklyRows.map((row) => ({
+    date: row.date,
+    points: Number(row.points),
+  }));
+  const weekPointsFromLedger = weeklySummary.reduce((sum, row) => sum + row.points, 0);
+
   return {
     totalPoints: stats?.totalPoints ?? 0,
-    weeklyPoints: stats?.weekPoints ?? 0,
-    weeklySummary: weeklyRows.map((row) => ({
-      date: row.date,
-      points: Number(row.points),
-    })),
+    // Match the daily breakdown (ledger). user_stats.week_points can lag after backfill.
+    weeklyPoints: weekPointsFromLedger > 0 ? weekPointsFromLedger : (stats?.weekPoints ?? 0),
+    weeklySummary,
   };
 }
